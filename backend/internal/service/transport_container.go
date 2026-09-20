@@ -123,11 +123,28 @@ func (s *transportContainerService) Transition(ctx context.Context, id uint, inp
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
-	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
+	if before == "quarantine" && target == "cleared" {
+		return s.releaseWithGate(ctx, id, input, &current, before, actor, requestID)
+	}
+	audit := auditLog(actor, requestID, "transition", "TransportContainer", id, before, target, input.Reason)
+	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current, audit); err != nil {
 		return model.TransportContainer{}, fmt.Errorf("transition 运输容器: %w", err)
 	}
-	if err := s.security.Audit(ctx, actor, requestID, "transition", "TransportContainer", id, before, target, input.Reason); err != nil {
-		return model.TransportContainer{}, fmt.Errorf("persist transition audit: %w", err)
+	return s.repository.Get(ctx, id)
+}
+
+// releaseWithGate applies the 质量放行门禁: the gate check, the state migration
+// and the audit entry commit in a single transaction, so a rejected release
+// leaves the container state and the audit trail untouched.
+func (s *transportContainerService) releaseWithGate(ctx context.Context, id uint, input dto.TransitionRequest, current *model.TransportContainer, before, actor, requestID string) (model.TransportContainer, error) {
+	detail := fmt.Sprintf("%s; release gate: all excursions closed and final dispositions are release", strings.TrimSpace(input.Reason))
+	audit := auditLog(actor, requestID, "transition", "TransportContainer", id, before, current.Status, detail)
+	blockers, err := s.repository.ReleaseWithGateCheck(ctx, id, input.ExpectedVersion, current, audit)
+	if err != nil {
+		return model.TransportContainer{}, fmt.Errorf("transition 运输容器: %w", err)
+	}
+	if len(blockers) > 0 {
+		return model.TransportContainer{}, fmt.Errorf("%w: 存在未关闭偏差或非放行(隔离/报废)处置 %s", ErrReleaseBlocked, strings.Join(blockers, ", "))
 	}
 	return s.repository.Get(ctx, id)
 }

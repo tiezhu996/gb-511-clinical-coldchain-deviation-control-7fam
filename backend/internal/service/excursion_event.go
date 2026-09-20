@@ -69,10 +69,12 @@ func (s *excursionEventService) Create(ctx context.Context, input dto.CreateExcu
 	if item.ContainerCode == "" || item.WindowCode == "" || item.SensorEvidence == "" || item.DurationMinutes < 1 {
 		return model.ExcursionEvent{}, fmt.Errorf("%w: container, temperature window, duration and sensor evidence are required", ErrInvalidInput)
 	}
-	if err := s.repository.Create(ctx, &item); err != nil {
+	// 新增偏差与容器放行共用容器行锁：放行已提交时本事务必然失败并整体回滚，
+	// 不会留下偏差记录或审计。
+	audit := auditLog(actor, requestID, "create", "ExcursionEvent", 0, "", item.Status, "created 偏差事件")
+	if err := s.repository.CreateForContainer(ctx, &item, audit); err != nil {
 		return model.ExcursionEvent{}, fmt.Errorf("create 偏差事件: %w", err)
 	}
-	_ = s.security.Audit(ctx, actor, requestID, "create", "ExcursionEvent", item.ID, "", item.Status, "created 偏差事件")
 	return item, nil
 }
 

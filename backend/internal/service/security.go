@@ -19,6 +19,11 @@ var (
 	ErrInvalidInput      = errors.New("business input validation failed")
 	ErrUnauthorized      = errors.New("invalid username or password")
 	ErrInactiveUser      = errors.New("user account is inactive")
+	// ErrReleaseBlocked rejects 隔离->已放行 when linked deviations are unclosed
+	// or their final disposition is 隔离/报废; the message lists blocking codes.
+	ErrReleaseBlocked = errors.New("container release gate blocked by deviations")
+	// ErrContainerReleased rejects a new deviation on an already released container.
+	ErrContainerReleased = errors.New("container already released; cannot register deviation")
 )
 
 type SecurityService interface {

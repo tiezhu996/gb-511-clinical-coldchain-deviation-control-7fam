@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -69,7 +70,10 @@ func (s *excursionEventService) Create(ctx context.Context, input dto.CreateExcu
 	if item.ContainerCode == "" || item.WindowCode == "" || item.SensorEvidence == "" || item.DurationMinutes < 1 {
 		return model.ExcursionEvent{}, fmt.Errorf("%w: container, temperature window, duration and sensor evidence are required", ErrInvalidInput)
 	}
-	if err := s.repository.Create(ctx, &item); err != nil {
+	if err := s.repository.CreateWithContainerGate(ctx, &item); err != nil {
+		if errors.Is(err, repository.ErrContainerReleased) {
+			return model.ExcursionEvent{}, fmt.Errorf("%w: container %s", ErrContainerReleased, item.ContainerCode)
+		}
 		return model.ExcursionEvent{}, fmt.Errorf("create 偏差事件: %w", err)
 	}
 	_ = s.security.Audit(ctx, actor, requestID, "create", "ExcursionEvent", item.ID, "", item.Status, "created 偏差事件")

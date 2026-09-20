@@ -31,6 +31,7 @@ export default function TransportContainerPage() {
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [pending, setPending] = useState<{ item: DomainRecord; state: string } | null>(null);
+  const [blockReason, setBlockReason] = useState('');
   const session = getSession();
   const canOperate = roleAtLeast(session?.role, 'operator');
   const canReview = roleAtLeast(session?.role, 'reviewer');
@@ -45,15 +46,22 @@ export default function TransportContainerPage() {
   };
   const confirmTransition = async () => {
     if (!pending) return;
-    await store.transition('containers', pending.item, pending.state, pending.state === 'quarantine' ? '温度异常，立即隔离容器' : '现场复核确认状态迁移', pending.item.evidence);
+    try {
+      await store.transition('containers', pending.item, pending.state, pending.state === 'quarantine' ? '温度异常，立即隔离容器' : '现场复核确认状态迁移', pending.item.evidence);
+      setBlockReason('');
+    } catch (error) {
+      // 放行门禁拒绝时后端会返回全部阻塞偏差编号,直接展示给质量复核员。
+      setBlockReason(error instanceof Error ? error.message : String(error));
+    }
     setPending(null);
   };
   return <main className="workspace"><header className="page-header"><div><p className="eyebrow">CONTAINER MONITORING</p><h1>运输容器</h1><p>按传感器追踪当前位置、实时温度和隔离状态。</p></div>{canOperate && <Button variant="contained" startIcon={<AddOutlinedIcon />} onClick={() => setCreateOpen(true)}>登记容器</Button>}</header>
     <section className="metrics"><MetricCard label="在册容器" value={store.meta.total} detail="传感器已绑定" /><MetricCard label="运输中" value={current} detail="持续轮询温度" /><MetricCard label="隔离" value={quarantine} detail="禁止进入下游" /></section>
     <section className="toolbar"><input aria-label="搜索容器" placeholder="容器编码、名称" value={search} onChange={(event) => setSearch(event.target.value)} /><Button startIcon={<SyncOutlinedIcon />} onClick={() => void store.load('containers', search)}>查询</Button></section>
     {store.error && <div className="alert" role="alert">{store.error}</div>}
-    <section className="table-shell" aria-busy={store.loading}><table><thead><tr><th>容器 / 传感器</th><th>位置</th><th>当前温度</th><th>状态</th><th>保管人</th><th>最近读数</th><th>证据</th><th>操作</th></tr></thead><tbody>{store.items.map((item) => { const next = nextContainerState(item, canReview); const range = temperatureRange(item); return <tr key={item.id}><td><strong>{item.code}</strong><small>{item.sensorId || item.relatedCode} · {item.containerType || item.category}</small></td><td>{item.currentLocation || item.facility}</td><td><TemperatureBadge value={item.currentTempC ?? item.metricValue} minimum={range.minimum} maximum={range.maximum} /></td><td><StatusBadge status={item.status} /></td><td>{item.custodian || item.owner}</td><td>{formatDate(item.lastSensorReading || item.updatedAt)}</td><td><EvidenceList evidence={item.evidence} /></td><td>{canOperate && next ? <button className="table-action" onClick={() => setPending({ item, state: next })}>{next === 'quarantine' ? '隔离' : next === 'cleared' ? '质量放行' : '开始运输'}</button> : <span className="muted">只读</span>}</td></tr>; })}</tbody></table>{store.loading && <div className="loading">正在同步传感器…</div>}</section>
+    {blockReason && <div className="alert" role="alert">放行受阻:{blockReason}</div>}
+    <section className="table-shell" aria-busy={store.loading}><table><thead><tr><th>容器 / 传感器</th><th>位置</th><th>当前温度</th><th>状态</th><th>保管人</th><th>最近读数</th><th>证据</th><th>操作</th></tr></thead><tbody>{store.items.map((item) => { const next = nextContainerState(item, canReview); const range = temperatureRange(item); return <tr key={item.id}><td><strong>{item.code}</strong><small>{item.sensorId || item.relatedCode} · {item.containerType || item.category}</small></td><td>{item.currentLocation || item.facility}</td><td><TemperatureBadge value={item.currentTempC ?? item.metricValue} minimum={range.minimum} maximum={range.maximum} /></td><td><StatusBadge status={item.status} /></td><td>{item.custodian || item.owner}</td><td>{formatDate(item.lastSensorReading || item.updatedAt)}</td><td><EvidenceList evidence={item.evidence} /></td><td>{canOperate && next ? <button className="table-action" onClick={() => { setBlockReason(''); setPending({ item, state: next }); }}>{next === 'quarantine' ? '隔离' : next === 'cleared' ? '质量放行' : '开始运输'}</button> : <span className="muted">只读</span>}</td></tr>; })}</tbody></table>{store.loading && <div className="loading">正在同步传感器…</div>}</section>
     <ConfirmDialog open={createOpen} title="登记应急运输容器" onCancel={() => setCreateOpen(false)} onConfirm={() => void createContainer()}><p>将绑定新传感器并保存初始温度基线。</p></ConfirmDialog>
-    <ConfirmDialog open={Boolean(pending)} title="确认容器状态" onCancel={() => setPending(null)} onConfirm={() => void confirmTransition()}><p>状态变化会写入审计记录；隔离后必须由质量复核员放行。</p><strong>{pending?.item.code}：{pending?.item.status} → {pending?.state}</strong></ConfirmDialog>
+    <ConfirmDialog open={Boolean(pending)} title="确认容器状态" onCancel={() => setPending(null)} onConfirm={() => void confirmTransition()}><p>状态变化会写入审计记录；隔离后必须由质量复核员放行。</p>{pending?.state === 'cleared' && <p>放行前将核对全部偏差已关闭且最终处置均为放行，否则拒绝并列出阻塞编号。</p>}<strong>{pending?.item.code}：{pending?.item.status} → {pending?.state}</strong></ConfirmDialog>
   </main>;
 }

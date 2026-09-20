@@ -123,6 +123,19 @@ func (s *transportContainerService) Transition(ctx context.Context, id uint, inp
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
+	if before == string(constants.ContainerStateQuarantine) && target == string(constants.ContainerStateCleared) {
+		// 质量放行门禁: deviation核对与状态迁移在同一事务内完成,任一偏差未关闭或
+		// 最终处置为隔离/报废时整体回滚,容器状态与审计日志保持不变。
+		audit := auditLog(actor, requestID, "transition", "TransportContainer", id, before, target, input.Reason)
+		blockers, err := s.repository.ReleaseWithGate(ctx, id, input.ExpectedVersion, &current, audit)
+		if err != nil {
+			return model.TransportContainer{}, fmt.Errorf("transition 运输容器: %w", err)
+		}
+		if len(blockers) > 0 {
+			return model.TransportContainer{}, fmt.Errorf("%w: %s", ErrReleaseBlocked, formatReleaseBlockers(blockers))
+		}
+		return s.repository.Get(ctx, id)
+	}
 	if err := s.repository.Update(ctx, id, input.ExpectedVersion, &current); err != nil {
 		return model.TransportContainer{}, fmt.Errorf("transition 运输容器: %w", err)
 	}
@@ -152,6 +165,23 @@ func validateTransportContainerBusinessFields(code, name, facility, owner string
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+// formatReleaseBlockers renders the blocking deviation codes with their reason
+// so the API response and the container page can show why release was refused.
+func formatReleaseBlockers(blockers []repository.ReleaseBlocker) string {
+	parts := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		switch {
+		case blocker.FinalDisposition != "":
+			parts = append(parts, fmt.Sprintf("%s(最终处置=%s)", blocker.ExcursionCode, blocker.FinalDisposition))
+		case blocker.Status != string(constants.ExcursionStateClosed):
+			parts = append(parts, fmt.Sprintf("%s(偏差未关闭,状态=%s)", blocker.ExcursionCode, blocker.Status))
+		default:
+			parts = append(parts, fmt.Sprintf("%s(缺少最终处置)", blocker.ExcursionCode))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func firstNonEmpty(values ...string) string {
